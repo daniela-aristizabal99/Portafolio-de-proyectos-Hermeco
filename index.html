@@ -155,24 +155,78 @@
       'A Tiempo': { hex: '#8DC63F', tailwind: 'bg-herm-success-green' },
       'Con Alerta': { hex: '#FFD200', tailwind: 'bg-herm-alert-yellow' },
       'En Riesgo': { hex: '#ED1C24', tailwind: 'bg-herm-alert-red' },
+      'Sin datos': { hex: '#D6D6D6', tailwind: 'bg-gray-300' },
     };
 
     let projectData = [];
     const db = window.db;
 
-    function parsePercentage(v) {
-      if (v === null || v === undefined) return 0;
-      if (typeof v === 'number') return v > 1 ? v / 100 : v;
-      const cleaned = String(v).replace('%', '').replace(',', '.').trim();
-      const n = parseFloat(cleaned);
-      return isNaN(n) ? 0 : n > 1 ? n / 100 : n;
-    }
+function parsePercentage(v) {
+  if (v === null || v === undefined) return 0;
 
-    function classifyProject(a) {
-      if (a < 0.61) return COLORS['En Riesgo'];
-      if (a <= 0.81) return COLORS['Con Alerta'];
-      return COLORS['A Tiempo'];
-    }
+  // limpiar texto si viene como string
+  let n = 0;
+  if (typeof v === "number") {
+    n = v;
+  } else {
+    const cleaned = String(v)
+      .replace("%", "")
+      .replace(",", ".")
+      .trim();
+    n = parseFloat(cleaned);
+  }
+
+  if (isNaN(n)) return 0;
+
+  // 🧠 lógica adaptativa:
+  // - 0–1 → escala 0–100 (0.85 → 85 %)
+  // - 1–5 → escala también 0–100 (1.05 → 105 %)
+  // - 5–300 → ya está bien (85 → 85 %)
+  // - 300–9999 → divide entre 100 (8500 → 85 %)
+  // - >9999 → divide entre 1000 (120000 → 120 %)
+  if (n <= 1) return n * 100;
+  if (n > 1 && n < 5) return n * 100;
+  if (n >= 5 && n <= 300) return n;
+  if (n > 300 && n <= 9999) return n / 100;
+  return n / 1000;
+}
+
+function classifyProject(avance, ideal, cumplimiento) {
+  // Si no hay datos o son 0 → Sin datos
+  if (
+    !avance || !ideal ||
+    isNaN(avance) || isNaN(ideal) ||
+    avance === 0 || ideal === 0
+  ) {
+    return { ...COLORS["Sin datos"], estado: "Sin datos", vencido: false };
+  }
+
+  // Redondear valores
+  const a = Math.round(avance * 10) / 10;
+  const i = Math.round(ideal * 10) / 10;
+  const c = Math.round(cumplimiento * 10) / 10;
+
+  // 🚨 Determinar si está vencido
+  let vencido = false;
+  if (i >= 100 && c < 100) vencido = true;
+
+  // 🚨 Si el proyecto debía estar al 100 % pero no lo está → En riesgo
+  if (vencido) {
+    return { ...COLORS["En Riesgo"], estado: "En Riesgo", vencido: true };
+  }
+
+  // 🔴 0–60 → En riesgo
+  if (c <= 60) return { ...COLORS["En Riesgo"], estado: "En Riesgo", vencido };
+
+  // 🟡 61–80 → Con alerta
+  if (c > 60 && c <= 80) return { ...COLORS["Con Alerta"], estado: "Con Alerta", vencido };
+
+  // 🟢 ≥81 → A tiempo
+  if (c > 80) return { ...COLORS["A Tiempo"], estado: "A Tiempo", vencido };
+
+  // fallback
+  return { ...COLORS["Sin datos"], estado: "Sin datos", vencido: false };
+}
 
     async function handleFileUpload(e) {
       const file = e.target.files[0];
@@ -203,14 +257,26 @@
     return `${day}/${month}/${year}`;
   };
 
-  const processed = rows.map(r => {
-    const p = {};
-    for (let k in r) p[k.trim().toLowerCase()] = r[k];
+ const processed = rows.map(r => {
+  const p = {};
+  for (let k in r) p[k.trim().toLowerCase()] = r[k];
     
-    const av = parsePercentage(p['% avance'] ?? p['avance']);
-    const id = parsePercentage(p['% ideal'] ?? p['ideal']);
-    const cu = parsePercentage(p['% cumplimiento'] ?? p['cumplimiento']);
-    const st = classifyProject(av);
+  const av = parsePercentage(p['% avance'] ?? p['avance']);
+  const id = parsePercentage(p['% ideal'] ?? p['ideal']);
+
+// ✅ Cálculo del cumplimiento
+let cu = 0;
+if (id > 0 && av > 0) {
+  cu = (av / id) * 100;
+} else {
+  cu = 0;
+}
+
+// 🧩 Clasificar el proyecto según reglas
+const st = classifyProject(av, id, cu);
+
+if (isNaN(cu) || cu === 0) console.warn(`Proyecto sin dato de cumplimiento válido: ${p['nombre del proyecto']}`);
+
 
     return {
       okr: p['okr'] || 'Sin OKR',
@@ -230,8 +296,8 @@
 
       avance: av,
       ideal: id,
-      cumplimiento: cu,
-      estado: Object.keys(COLORS).find(k => COLORS[k].hex === st.hex),
+      cumplimiento: parseFloat(cu.toFixed(2)),
+      estado: st.estado || Object.keys(COLORS).find(k => COLORS[k].hex === st.hex) || "Sin datos",
       color: st.hex,
       tailwind: st.tailwind
     };
@@ -249,19 +315,32 @@
 
 
     async function showCommitteeView() {
-      document.getElementById("admin-view").classList.add("hidden");
-      document.getElementById("committee-view").classList.remove("hidden");
+  document.getElementById("admin-view").classList.add("hidden");
+  document.getElementById("committee-view").classList.remove("hidden");
 
-      const snap = await getDoc(doc(db, "portafolio", "data"));
-      if (snap.exists()) {
-        const data = snap.data();
-        projectData = data.proyectos;
-        document.getElementById("update-date").textContent = `Fecha de actualización: ${data.fecha}`;
-        renderDashboard();
-      } else {
-        alert("No hay datos cargados en Firestore");
-      }
-    }
+  const snap = await getDoc(doc(db, "portafolio", "data"));
+  if (!snap.exists()) {
+    alert("No hay datos cargados en Firestore");
+    return;
+  }
+
+  const data = snap.data();
+
+  // ⬇️ Recalcular SEMÁFORO con la lógica actual (ignorando lo persistido)
+  projectData = (data.proyectos || []).map(p => {
+    const st = classifyProject(p.avance, p.ideal, p.cumplimiento);
+    const estadoKey = st.estado || Object.keys(COLORS).find(k => COLORS[k].hex === st.hex) || 'Sin datos';
+    return {
+      ...p,
+      estado: estadoKey,
+      color: st.hex,
+      tailwind: st.tailwind
+    };
+  });
+
+  document.getElementById("update-date").textContent = `Fecha de actualización: ${data.fecha}`;
+  renderDashboard();
+}
 
     function showAdminView() {
       document.getElementById("admin-view").classList.remove("hidden");
@@ -293,11 +372,13 @@
 
     const groupContainer = okrCard.querySelector(`#projects-${safeId}`);
 
-    group.forEach((p, i) => {
-      const projectId = `${safeId}-${i}`;
-      const avance = (p.avance * 100).toFixed(1);
-      const ideal = (p.ideal * 100).toFixed(1);
-      const cumplimiento = (p.cumplimiento * 100).toFixed(1);
+group.forEach((p, i) => {
+  const projectId = `${safeId}-${i}`;
+
+  // ✅ Evitar mostrar "NaN%" o "0.0%" cuando no hay datos
+  const avance = isNaN(p.avance) || p.avance === 0 ? "N/A" : p.avance.toFixed(1);
+  const ideal = isNaN(p.ideal) || p.ideal === 0 ? "N/A" : p.ideal.toFixed(1);
+  const cumplimiento = isNaN(p.cumplimiento) || p.cumplimiento === 0 ? "N/A" : p.cumplimiento.toFixed(1);
 
       const card = document.createElement("div");
       card.className =
@@ -317,6 +398,9 @@
             <i data-lucide="chevron-down" class="w-5 h-5 text-gray-500 transition-transform"></i>
           </div>
         </button>
+		
+${p.vencido ? '<p class="text-xs text-red-600 font-semibold px-4 mt-1">⚠ Proyecto vencido</p>' : ''}
+
 
         <!-- DETALLE (oculto por defecto) -->
         <div id="body-${projectId}" class="hidden p-4 border-t bg-white">
@@ -331,19 +415,25 @@
 
 
           <div class="grid grid-cols-3 text-center mb-4">
-            <div>
-              <p class="text-xs text-gray-500">% Avance</p>
-              <p class="text-lg font-bold text-herm-dark-blue">${avance}%</p>
-            </div>
-            <div>
-              <p class="text-xs text-gray-500">% Ideal</p>
-              <p class="text-lg font-bold text-herm-dark-blue">${ideal}%</p>
-            </div>
-            <div>
-              <p class="text-xs text-gray-500">% Cumplimiento</p>
-              <p class="text-lg font-bold text-herm-dark-blue">${cumplimiento}%</p>
-            </div>
-          </div>
+		  <div>
+   			 <p class="text-xs text-gray-500">% Avance</p>
+   			 <p class="text-lg font-bold text-herm-dark-blue">
+    			  ${avance === "N/A" ? "N/A" : avance + "%"}
+    </p>
+  </div>
+  <div>
+    <p class="text-xs text-gray-500">% Ideal</p>
+    <p class="text-lg font-bold text-herm-dark-blue">
+      ${ideal === "N/A" ? "N/A" : ideal + "%"}
+    </p>
+  </div>
+  <div>
+    <p class="text-xs text-gray-500">% Cumplimiento</p>
+    <p class="text-lg font-bold text-herm-dark-blue">
+      ${cumplimiento === "N/A" ? "N/A" : cumplimiento + "%"}
+    </p>
+  </div>
+</div>
 
           <div class="mb-3">
             <p class="text-sm font-semibold text-herm-dark-blue">Entregables:</p>
@@ -387,12 +477,15 @@ function renderChart() {
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
 
-  const counts = { 'A Tiempo': 0, 'Con Alerta': 0, 'En Riesgo': 0 };
-  projectData.forEach(p => { counts[p.estado]++; });
+  const counts = { 'A Tiempo': 0, 'Con Alerta': 0, 'En Riesgo': 0, 'Sin datos': 0 };
+projectData.forEach(p => {
+  if (counts.hasOwnProperty(p.estado)) counts[p.estado]++;
+});
 
-  const labels = Object.keys(counts);
-  const data = Object.values(counts);
-  const colors = labels.map(l => COLORS[l].hex);
+const orderedLabels = ['A Tiempo', 'Con Alerta', 'En Riesgo', 'Sin datos'];
+const labels = orderedLabels;
+const data = labels.map(l => counts[l]);
+const colors = labels.map(l => COLORS[l].hex);
 
   // limpiar gráfico anterior
   if (window.donutChart) window.donutChart.destroy();
@@ -504,5 +597,4 @@ window.onload = () => {
 
   </script>
 </body>
-
 </html>
