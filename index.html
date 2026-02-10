@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>HERMECO | (Portafolio de Proyectos Estrategicos)</title>
+  <title>HERMECO | Portafolio de Proyectos Estrategicos</title>
   <meta property="og:title" content="Portafolio Estratégico HERMECO">
 <meta property="og:description" content="Visualiza el estado de los proyectos estratégicos de HERMECO en tiempo real.">
 <meta property="og:image" content="favicon.png">
@@ -24,7 +24,7 @@
   <!-- Firebase -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-    import { getFirestore } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+    import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyCeIhrajV6Fppw9wU7VFCSLFk4XB0Upcws",
@@ -39,6 +39,7 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
     window.db = db;
+    window.firebase = { doc, onSnapshot, setDoc };
   </script>
 
   <script>
@@ -97,12 +98,11 @@
         <h2 class="text-2xl font-bold text-herm-dark-blue mb-4">Panel de Administración</h2>
         <p class="text-gray-600 mb-4">Carga aquí el archivo actualizado del portafolio. Los datos se guardarán automáticamente para todos los miembros del comité.</p>
 
-        <label for="admin-file-upload"
+        <label id="upload-label" for="admin-file-upload"
           class="cursor-pointer inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-full shadow-sm text-white bg-herm-success-green hover:bg-herm-success-green/90 transition duration-150 ease-in-out">
           <i data-lucide="upload" class="w-5 h-5 mr-2"></i>Cargar archivo (CSV/XLSX)
         </label>
         <input id="admin-file-upload" type="file" accept=".csv, .xlsx" class="hidden">
-        <div id="admin-message" class="mt-6 text-herm-success-green hidden font-semibold">✅ Datos actualizados correctamente</div>
       </div>
     </div>
 
@@ -149,7 +149,8 @@
 
   <!-- JS PRINCIPAL -->
   <script type="module">
-    import { doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+    const { doc, onSnapshot, setDoc } = window.firebase;
+    const db = window.db;
 
     const COLORS = {
       'A Tiempo': { hex: '#8DC63F', tailwind: 'bg-herm-success-green' },
@@ -159,31 +160,17 @@
     };
 
     let projectData = [];
-    const db = window.db;
 
 function parsePercentage(v) {
   if (v === null || v === undefined) return 0;
-
-  // limpiar texto si viene como string
   let n = 0;
   if (typeof v === "number") {
     n = v;
   } else {
-    const cleaned = String(v)
-      .replace("%", "")
-      .replace(",", ".")
-      .trim();
+    const cleaned = String(v).replace("%", "").replace(",", ".").trim();
     n = parseFloat(cleaned);
   }
-
   if (isNaN(n)) return 0;
-
-  // 🧠 lógica adaptativa:
-  // - 0–1 → escala 0–100 (0.85 → 85 %)
-  // - 1–5 → escala también 0–100 (1.05 → 105 %)
-  // - 5–300 → ya está bien (85 → 85 %)
-  // - 300–9999 → divide entre 100 (8500 → 85 %)
-  // - >9999 → divide entre 1000 (120000 → 120 %)
   if (n <= 1) return n * 100;
   if (n > 1 && n < 5) return n * 100;
   if (n >= 5 && n <= 300) return n;
@@ -192,154 +179,155 @@ function parsePercentage(v) {
 }
 
 function classifyProject(avance, ideal, cumplimiento) {
-  // Si no hay datos o son 0 → Sin datos
-  if (
-    !avance || !ideal ||
-    isNaN(avance) || isNaN(ideal) ||
-    avance === 0 || ideal === 0
-  ) {
+  if (!avance || !ideal || isNaN(avance) || isNaN(ideal) || avance === 0 || ideal === 0) {
     return { ...COLORS["Sin datos"], estado: "Sin datos", vencido: false };
   }
-
-  // Redondear valores
   const a = Math.round(avance * 10) / 10;
   const i = Math.round(ideal * 10) / 10;
   const c = Math.round(cumplimiento * 10) / 10;
-
-  // 🚨 Determinar si está vencido
   let vencido = false;
   if (i >= 100 && c < 100) vencido = true;
-
-  // 🚨 Si el proyecto debía estar al 100 % pero no lo está → En riesgo
   if (vencido) {
     return { ...COLORS["En Riesgo"], estado: "En Riesgo", vencido: true };
   }
-
-  // 🔴 0–60 → En riesgo
   if (c <= 60) return { ...COLORS["En Riesgo"], estado: "En Riesgo", vencido };
-
-  // 🟡 61–80 → Con alerta
   if (c > 60 && c <= 80) return { ...COLORS["Con Alerta"], estado: "Con Alerta", vencido };
-
-  // 🟢 ≥81 → A tiempo
   if (c > 80) return { ...COLORS["A Tiempo"], estado: "A Tiempo", vencido };
-
-  // fallback
   return { ...COLORS["Sin datos"], estado: "Sin datos", vencido: false };
 }
 
     async function handleFileUpload(e) {
       const file = e.target.files[0];
+      const uploadLabel = document.getElementById('upload-label');
       if (!file) return;
+
+      uploadLabel.innerHTML = '<i data-lucide="loader-2" class="animate-spin w-5 h-5 mr-2"></i>Procesando...';
+      uploadLabel.classList.add('opacity-50', 'cursor-not-allowed');
+      lucide.createIcons();
+      
       const reader = new FileReader();
       reader.onload = async (ev) => {
-        const wb = XLSX.read(ev.target.result, { type: 'binary' });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const json = XLSX.utils.sheet_to_json(ws);
-        await saveToFirestore(json);
+        try {
+            const wb = XLSX.read(ev.target.result, { type: 'binary' });
+            const ws = wb.Sheets[wb.SheetNames[0]];
+            const json = XLSX.utils.sheet_to_json(ws);
+            await saveToFirestore(json);
+            Swal.fire({
+                icon: 'success',
+                title: '¡Datos actualizados!',
+                text: 'El portafolio de proyectos se ha actualizado correctamente.',
+                timer: 2000,
+                showConfirmButton: false
+            });
+        } catch (error) {
+            Swal.fire({
+                icon: 'error',
+                title: 'Error al procesar el archivo',
+                text: error.message
+            });
+        } finally {
+            uploadLabel.innerHTML = '<i data-lucide="upload" class="w-5 h-5 mr-2"></i>Cargar archivo (CSV/XLSX)';
+            uploadLabel.classList.remove('opacity-50', 'cursor-not-allowed');
+            lucide.createIcons();
+            e.target.value = '';
+        }
+      };
+      reader.onerror = () => {
+          Swal.fire({
+              icon: 'error',
+              title: 'Error de Lectura',
+              text: 'No se pudo leer el archivo seleccionado.'
+          });
+          uploadLabel.innerHTML = '<i data-lucide="upload" class="w-5 h-5 mr-2"></i>Cargar archivo (CSV/XLSX)';
+          uploadLabel.classList.remove('opacity-50', 'cursor-not-allowed');
+          lucide.createIcons();
       };
       reader.readAsBinaryString(file);
     }
 
   async function saveToFirestore(rows) {
-  const now = new Date().toLocaleString('es-CO');
+      const now = new Date().toLocaleString('es-CO');
+      const excelDateToJS = (excelDate) => {
+        if (!excelDate) return '';
+        if (typeof excelDate === 'string') return excelDate;
+        const date = new Date((excelDate - 25569) * 86400 * 1000);
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        return `${day}/${month}/${year}`;
+      };
 
-  // 🧠 Función auxiliar para convertir fechas de Excel a formato dd/mm/aaaa
-  const excelDateToJS = (excelDate) => {
-    if (!excelDate) return '';
-    // Si ya viene como texto, devolverlo igual
-    if (typeof excelDate === 'string') return excelDate;
-    // Si viene como número (caso típico de Excel)
-    const date = new Date((excelDate - 25569) * 86400 * 1000); // Excel epoch → JS date
-    const day = String(date.getDate()).padStart(2, '0');
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${day}/${month}/${year}`;
-  };
+     const processed = rows.map(r => {
+      const p = {};
+      for (let k in r) p[k.trim().toLowerCase()] = r[k];
+      const av = parsePercentage(p['% avance'] ?? p['avance']);
+      const id = parsePercentage(p['% ideal'] ?? p['ideal']);
+      let cu = (id > 0 && av > 0) ? (av / id) * 100 : 0;
+      const st = classifyProject(av, id, cu);
 
- const processed = rows.map(r => {
-  const p = {};
-  for (let k in r) p[k.trim().toLowerCase()] = r[k];
-    
-  const av = parsePercentage(p['% avance'] ?? p['avance']);
-  const id = parsePercentage(p['% ideal'] ?? p['ideal']);
+        return {
+          okr: p['okr'] || 'Sin OKR',
+          nombre: p['nombre del proyecto'] || '',
+          etapa: p['etapa'] || '',
+          objetivo: p['objetivo'] || '',
+          indicadores: p['indicadores'] || '',
+          entregables: p['entregables'] || '',
+          comite: p['comite patrocinador'] || '',
+          lider: p['lider'] || '',
+          equipo: p['equipo'] || '',
+          fecha_inicio: excelDateToJS(p['fecha inicio']),
+          fecha_fin: excelDateToJS(p['fecha fin']),
+          fecha_fin_me: excelDateToJS(p['fecha fin me']),
+          avance: av,
+          ideal: id,
+          cumplimiento: parseFloat(cu.toFixed(2)),
+          estado: st.estado || Object.keys(COLORS).find(k => COLORS[k].hex === st.hex) || "Sin datos",
+          color: st.hex,
+          tailwind: st.tailwind
+        };
+      });
 
-// ✅ Cálculo del cumplimiento
-let cu = 0;
-if (id > 0 && av > 0) {
-  cu = (av / id) * 100;
-} else {
-  cu = 0;
+      await setDoc(doc(db, "portafolio", "data"), {
+        proyectos: processed,
+        fecha: now
+      });
 }
 
-// 🧩 Clasificar el proyecto según reglas
-const st = classifyProject(av, id, cu);
-
-if (isNaN(cu) || cu === 0) console.warn(`Proyecto sin dato de cumplimiento válido: ${p['nombre del proyecto']}`);
-
-
-    return {
-      okr: p['okr'] || 'Sin OKR',
-      nombre: p['nombre del proyecto'] || '',
-      etapa: p['etapa'] || '',
-      objetivo: p['objetivo'] || '',
-      indicadores: p['indicadores'] || '',
-      entregables: p['entregables'] || '',
-      comite: p['comite patrocinador'] || '',
-      lider: p['lider'] || '',
-      equipo: p['equipo'] || '',
-
-      // 🗓️ Fechas convertidas de Excel a formato dd/mm/aaaa
-      fecha_inicio: excelDateToJS(p['fecha inicio']),
-      fecha_fin: excelDateToJS(p['fecha fin']),
-      fecha_fin_me: excelDateToJS(p['fecha fin me']),
-
-      avance: av,
-      ideal: id,
-      cumplimiento: parseFloat(cu.toFixed(2)),
-      estado: st.estado || Object.keys(COLORS).find(k => COLORS[k].hex === st.hex) || "Sin datos",
-      color: st.hex,
-      tailwind: st.tailwind
-    };
-  });
-
-  await setDoc(doc(db, "portafolio", "data"), {
-    proyectos: processed,
-    fecha: now
-  });
-
-  document.getElementById('admin-message').classList.remove('hidden');
-  setTimeout(() => document.getElementById('admin-message').classList.add('hidden'), 3000);
+function renderEmptyState() {
+    const container = document.getElementById("okr-cards-container");
+    container.innerHTML = `
+        <div class="text-center py-12">
+            <p class="text-lg font-semibold text-gray-500">No hay proyectos cargados</p>
+            <p class="text-gray-400 mt-2">Sube un archivo en el panel de administración para empezar.</p>
+        </div>
+    `;
+    document.getElementById('total-count').textContent = '0';
+    document.getElementById('execution-count').textContent = '0';
+    document.getElementById('structuring-count').textContent = '0';
+    if(window.donutChart) window.donutChart.destroy();
 }
 
 
-
-    async function showCommitteeView() {
+function showCommitteeView() {
   document.getElementById("admin-view").classList.add("hidden");
   document.getElementById("committee-view").classList.remove("hidden");
+  
+  onSnapshot(doc(db, "portafolio", "data"), (snap) => {
+    if (!snap.exists() || !snap.data().proyectos || snap.data().proyectos.length === 0) {
+      renderEmptyState();
+      return;
+    }
 
-  const snap = await getDoc(doc(db, "portafolio", "data"));
-  if (!snap.exists()) {
-    alert("No hay datos cargados en Firestore");
-    return;
-  }
+    const data = snap.data();
+    projectData = (data.proyectos || []).map(p => {
+        const st = classifyProject(p.avance, p.ideal, p.cumplimiento);
+        const estadoKey = st.estado || Object.keys(COLORS).find(k => COLORS[k].hex === st.hex) || 'Sin datos';
+        return { ...p, estado: estadoKey, color: st.hex, tailwind: st.tailwind };
+    });
 
-  const data = snap.data();
-
-  // ⬇️ Recalcular SEMÁFORO con la lógica actual (ignorando lo persistido)
-  projectData = (data.proyectos || []).map(p => {
-    const st = classifyProject(p.avance, p.ideal, p.cumplimiento);
-    const estadoKey = st.estado || Object.keys(COLORS).find(k => COLORS[k].hex === st.hex) || 'Sin datos';
-    return {
-      ...p,
-      estado: estadoKey,
-      color: st.hex,
-      tailwind: st.tailwind
-    };
+    document.getElementById("update-date").textContent = `Fecha de actualización: ${data.fecha}`;
+    renderDashboard();
   });
-
-  document.getElementById("update-date").textContent = `Fecha de actualización: ${data.fecha}`;
-  renderDashboard();
 }
 
     function showAdminView() {
@@ -348,127 +336,101 @@ if (isNaN(cu) || cu === 0) console.warn(`Proyecto sin dato de cumplimiento váli
     }
 
    function renderProjects() {
-  const container = document.getElementById("okr-cards-container");
-  container.innerHTML = "";
+      const container = document.getElementById("okr-cards-container");
+      container.innerHTML = "";
 
-  const okrGroups = {};
-  projectData.forEach(p => {
-    if (!okrGroups[p.okr]) okrGroups[p.okr] = [];
-    okrGroups[p.okr].push(p);
-  });
-
-  Object.keys(okrGroups).forEach(okr => {
-    const group = okrGroups[okr];
-    const safeId = okr.replace(/[^a-zA-Z0-9]/g, "_");
-
-    const okrCard = document.createElement("div");
-    okrCard.className = "bg-white p-5 rounded-xl shadow-lg border-l-8 border-herm-dark-blue mb-6";
-
-    okrCard.innerHTML = `
-      <h3 class="text-xl font-bold text-herm-dark-blue mb-3">${okr}</h3>
-      <p class="text-sm text-gray-500 mb-4">${group.length} proyecto(s)</p>
-      <div class="space-y-3" id="projects-${safeId}"></div>
-    `;
-
-    const groupContainer = okrCard.querySelector(`#projects-${safeId}`);
-
-group.forEach((p, i) => {
-  const projectId = `${safeId}-${i}`;
-
-  // ✅ Evitar mostrar "NaN%" o "0.0%" cuando no hay datos
-  const avance = isNaN(p.avance) || p.avance === 0 ? "N/A" : p.avance.toFixed(1);
-  const ideal = isNaN(p.ideal) || p.ideal === 0 ? "N/A" : p.ideal.toFixed(1);
-  const cumplimiento = isNaN(p.cumplimiento) || p.cumplimiento === 0 ? "N/A" : p.cumplimiento.toFixed(1);
-
-      const card = document.createElement("div");
-      card.className =
-        "bg-gray-50 rounded-lg border-t-4 shadow-md overflow-hidden transition-all duration-300";
-      card.style.borderColor = p.color;
-
-      card.innerHTML = `
-        <!-- CABECERA -->
-        <button id="header-${projectId}"
-          class="w-full flex justify-between items-center p-4 text-left hover:bg-gray-100 transition">
-          <div>
-            <h4 class="font-semibold text-herm-dark-blue">${p.nombre}</h4>
-            <p class="text-xs text-gray-600"><strong>Líder:</strong> ${p.lider}</p>
-          </div>
-          <div class="flex items-center gap-3">
-            <span class="text-xs px-3 py-1 rounded-full text-white ${p.tailwind}">${p.estado}</span>
-            <i data-lucide="chevron-down" class="w-5 h-5 text-gray-500 transition-transform"></i>
-          </div>
-        </button>
-		
-${p.vencido ? '<p class="text-xs text-red-600 font-semibold px-4 mt-1">⚠ Proyecto vencido</p>' : ''}
-
-
-        <!-- DETALLE (oculto por defecto) -->
-        <div id="body-${projectId}" class="hidden p-4 border-t bg-white">
-          <p class="text-sm text-gray-700 mb-2"><strong>Comité patrocinador:</strong> ${p.comite}</p>
-          <p class="text-sm text-gray-700 mb-3"><strong>Objetivo:</strong> ${p.objetivo}</p>
-  <!-- 🗓️ Fechas clave del proyecto -->
-  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
-    <p class="text-xs text-gray-700"><strong>Inicio:</strong> ${p.fecha_inicio || "—"}</p>
-    <p class="text-xs text-gray-700"><strong>Fin:</strong> ${p.fecha_fin || "—"}</p>
-    <p class="text-xs text-gray-700"><strong>Fin ME:</strong> ${p.fecha_fin_me || "—"}</p>
-  </div>
-
-
-          <div class="grid grid-cols-3 text-center mb-4">
-		  <div>
-   			 <p class="text-xs text-gray-500">% Avance</p>
-   			 <p class="text-lg font-bold text-herm-dark-blue">
-    			  ${avance === "N/A" ? "N/A" : avance + "%"}
-    </p>
-  </div>
-  <div>
-    <p class="text-xs text-gray-500">% Ideal</p>
-    <p class="text-lg font-bold text-herm-dark-blue">
-      ${ideal === "N/A" ? "N/A" : ideal + "%"}
-    </p>
-  </div>
-  <div>
-    <p class="text-xs text-gray-500">% Cumplimiento</p>
-    <p class="text-lg font-bold text-herm-dark-blue">
-      ${cumplimiento === "N/A" ? "N/A" : cumplimiento + "%"}
-    </p>
-  </div>
-</div>
-
-          <div class="mb-3">
-            <p class="text-sm font-semibold text-herm-dark-blue">Entregables:</p>
-            <p class="text-sm text-gray-600 whitespace-pre-line">${p.entregables || "—"}</p>
-          </div>
-
-          <div>
-            <p class="text-sm font-semibold text-herm-dark-blue">Indicadores:</p>
-            <p class="text-sm text-gray-600 whitespace-pre-line">${p.indicadores || "—"}</p>
-          </div>
-        </div>
-      `;
-
-      groupContainer.appendChild(card);
-
-      // Evento para abrir/cerrar detalle
-      const header = card.querySelector(`#header-${projectId}`);
-      const body = card.querySelector(`#body-${projectId}`);
-      const icon = header.querySelector("i");
-
-      header.addEventListener("click", () => {
-        const isOpen = !body.classList.contains("hidden");
-        document.querySelectorAll(`#projects-${safeId} [id^="body-"]`).forEach(el => el.classList.add("hidden"));
-        document.querySelectorAll(`#projects-${safeId} i[data-lucide="chevron-down"]`).forEach(el => el.style.transform = "rotate(0deg)");
-        if (!isOpen) {
-          body.classList.remove("hidden");
-          icon.style.transform = "rotate(180deg)";
-        }
+      const okrGroups = {};
+      projectData.forEach(p => {
+        if (!okrGroups[p.okr]) okrGroups[p.okr] = [];
+        okrGroups[p.okr].push(p);
       });
-    });
 
-    container.appendChild(okrCard);
-  });
+      Object.keys(okrGroups).sort().forEach(okr => {
+        const group = okrGroups[okr];
+        const safeId = okr.replace(/[^a-zA-Z0-9]/g, "_");
 
-  lucide.createIcons();
+        const okrCard = document.createElement("div");
+        okrCard.className = "bg-white p-5 rounded-xl shadow-lg border-l-8 border-herm-dark-blue mb-6";
+
+        okrCard.innerHTML = `
+          <h3 class="text-xl font-bold text-herm-dark-blue mb-3">${okr}</h3>
+          <p class="text-sm text-gray-500 mb-4">${group.length} proyecto(s)</p>
+          <div class="space-y-3" id="projects-${safeId}"></div>
+        `;
+
+        const groupContainer = okrCard.querySelector(`#projects-${safeId}`);
+
+        group.forEach((p, i) => {
+          const projectId = `${safeId}-${i}`;
+          const avance = isNaN(p.avance) || p.avance === 0 ? "N/A" : p.avance.toFixed(1);
+          const ideal = isNaN(p.ideal) || p.ideal === 0 ? "N/A" : p.ideal.toFixed(1);
+          const cumplimiento = isNaN(p.cumplimiento) || p.cumplimiento === 0 ? "N/A" : p.cumplimiento.toFixed(1);
+
+          const card = document.createElement("div");
+          card.className = "bg-gray-50 rounded-lg border-t-4 shadow-md overflow-hidden transition-all duration-300";
+          card.style.borderColor = p.color;
+
+          card.innerHTML = `
+            <button id="header-${projectId}" class="w-full flex justify-between items-center p-4 text-left hover:bg-gray-100 transition">
+              <div>
+                <h4 class="font-semibold text-herm-dark-blue">${p.nombre}</h4>
+                <p class="text-xs text-gray-600"><strong>Líder:</strong> ${p.lider}</p>
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-xs px-3 py-1 rounded-full text-white ${p.tailwind}">${p.estado}</span>
+                <i data-lucide="chevron-down" class="w-5 h-5 text-gray-500 transition-transform"></i>
+              </div>
+            </button>
+            ${p.vencido ? '<p class="text-xs text-red-600 font-semibold px-4 mt-1">⚠ Proyecto vencido</p>' : ''}
+            <div id="body-${projectId}" class="hidden p-4 border-t bg-white">
+              <p class="text-sm text-gray-700 mb-2"><strong>Comité patrocinador:</strong> ${p.comite}</p>
+              <p class="text-sm text-gray-700 mb-3"><strong>Objetivo:</strong> ${p.objetivo}</p>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+                <p class="text-xs text-gray-700"><strong>Inicio:</strong> ${p.fecha_inicio || "—"}</p>
+                <p class="text-xs text-gray-700"><strong>Fin:</strong> ${p.fecha_fin || "—"}</p>
+                <p class="text-xs text-gray-700"><strong>Fin ME:</strong> ${p.fecha_fin_me || "—"}</p>
+              </div>
+              <div class="grid grid-cols-3 text-center mb-4">
+                  <div>
+                     <p class="text-xs text-gray-500">% Avance</p>
+                     <p class="text-lg font-bold text-herm-dark-blue">${avance === "N/A" ? "N/A" : avance + "%"}</p>
+                  </div>
+                  <div>
+                    <p class="text-xs text-gray-500">% Ideal</p>
+                    <p class="text-lg font-bold text-herm-dark-blue">${ideal === "N/A" ? "N/A" : ideal + "%"}</p>
+                  </div>
+                  <div>
+                    <p class="text-xs text-gray-500">% Cumplimiento</p>
+                    <p class="text-lg font-bold text-herm-dark-blue">${cumplimiento === "N/A" ? "N/A" : cumplimiento + "%"}</p>
+                  </div>
+              </div>
+              <div class="mb-3">
+                <p class="text-sm font-semibold text-herm-dark-blue">Entregables:</p>
+                <p class="text-sm text-gray-600 whitespace-pre-line">${p.entregables || "—"}</p>
+              </div>
+              <div>
+                <p class="text-sm font-semibold text-herm-dark-blue">Indicadores:</p>
+                <p class="text-sm text-gray-600 whitespace-pre-line">${p.indicadores || "—"}</p>
+              </div>
+            </div>
+          `;
+          groupContainer.appendChild(card);
+          const header = card.querySelector(`#header-${projectId}`);
+          const body = card.querySelector(`#body-${projectId}`);
+          const icon = header.querySelector("i");
+          header.addEventListener("click", () => {
+            const isOpen = !body.classList.contains("hidden");
+            document.querySelectorAll(`#projects-${safeId} [id^="body-"]`).forEach(el => el.classList.add("hidden"));
+            document.querySelectorAll(`#projects-${safeId} i[data-lucide="chevron-down"]`).forEach(el => el.style.transform = "rotate(0deg)");
+            if (!isOpen) {
+              body.classList.remove("hidden");
+              icon.style.transform = "rotate(180deg)";
+            }
+          });
+        });
+        container.appendChild(okrCard);
+      });
+      lucide.createIcons();
 }
 
 
@@ -478,85 +440,54 @@ function renderChart() {
   const ctx = canvas.getContext("2d");
 
   const counts = { 'A Tiempo': 0, 'Con Alerta': 0, 'En Riesgo': 0, 'Sin datos': 0 };
-projectData.forEach(p => {
-  if (counts.hasOwnProperty(p.estado)) counts[p.estado]++;
-});
+  projectData.forEach(p => {
+    if (counts.hasOwnProperty(p.estado)) counts[p.estado]++;
+  });
 
-const orderedLabels = ['A Tiempo', 'Con Alerta', 'En Riesgo', 'Sin datos'];
-const labels = orderedLabels;
-const data = labels.map(l => counts[l]);
-const colors = labels.map(l => COLORS[l].hex);
+  const orderedLabels = ['A Tiempo', 'Con Alerta', 'En Riesgo', 'Sin datos'];
+  const labels = orderedLabels;
+  const data = labels.map(l => counts[l]);
+  const colors = labels.map(l => COLORS[l].hex);
 
-  // limpiar gráfico anterior
   if (window.donutChart) window.donutChart.destroy();
 
-  // crear contenedor de detalle dinámico
   const legend = document.getElementById("chart-legend");
-  legend.innerHTML = `
-    <div id="chart-projects-list" class="mt-3 text-sm text-gray-700"></div>
-  `;
-
+  legend.innerHTML = `<div id="chart-projects-list" class="mt-3 text-sm text-gray-700"></div>`;
   const projectListContainer = document.getElementById("chart-projects-list");
 
-  // Crear gráfico
     window.donutChart = new Chart(ctx, {
     type: "doughnut",
-    data: { 
-      labels, 
-      datasets: [{ 
-        data, 
-        backgroundColor: colors 
-      }] 
-    },
+    data: { labels, datasets: [{ data, backgroundColor: colors }] },
     options: {
       cutout: "70%",
       plugins: {
-        legend: { 
-          display: true, 
-          labels: { color: '#005B7F', font: { size: 12, family: 'Century Gothic' } } 
-        },
+        legend: { display: true, labels: { color: '#005B7F', font: { size: 12, family: 'Century Gothic' } } },
         tooltip: { enabled: false },
         datalabels: {
-          color: '#005B7F',          // 🟡 Color del texto
-          font: {
-            weight: 'bold',
-            size: 30,                // 🟢 Tamaño del número (ajústalo como quieras)
-            family: 'Century Gothic'
-          },
-          formatter: (value, context) => {
-            const total = context.chart.data.datasets[0].data.reduce((a, b) => a + b, 0);
-            const percent = ((value / total) * 100).toFixed(0);
-            return `${value}`;   // muestra número
-          },
+          color: '#005B7F',
+          font: { weight: 'bold', size: 30, family: 'Century Gothic' },
+          formatter: (value) => value,
           anchor: 'center',
           align: 'center',
         }
       },
       onClick: (event, elements) => {
         if (elements.length > 0) {
-          const index = elements[0].index;
-          const status = labels[index];
-          showProjectsByStatus(status);
+          showProjectsByStatus(labels[elements[0].index]);
         }
       }
     },
-    plugins: [ChartDataLabels]  // ✅ el plugin activado correctamente
+    plugins: [ChartDataLabels]
   });
 
-  // Mostrar lista de proyectos según estado
   function showProjectsByStatus(status) {
     const projects = projectData.filter(p => p.estado === status);
-    if (projects.length === 0) {
-      projectListContainer.innerHTML = `<p class="text-gray-500 italic">No hay proyectos en este estado.</p>`;
-      return;
-    }
-
-    projectListContainer.innerHTML = `
-      <p class="font-semibold text-herm-dark-blue mb-1">${status}</p>
-      <ul class="list-disc ml-5 space-y-1 text-gray-700">
+    projectListContainer.innerHTML = (projects.length === 0)
+    ? `<p class="text-gray-500 italic">No hay proyectos en este estado.</p>`
+    : `<p class="font-semibold text-herm-dark-blue mb-1">${status}</p>
+       <ul class="list-disc ml-5 space-y-1 text-gray-700">
         ${projects.map(p => `<li>${p.nombre}</li>`).join("")}
-      </ul>
-    `;
+       </ul>`;
   }
 }
 
@@ -566,7 +497,6 @@ function renderDashboard() {
   document.getElementById('execution-count').textContent = projectData.filter(p => p.etapa.toLowerCase().includes('ejec')).length;
   document.getElementById('structuring-count').textContent = projectData.filter(p => p.etapa.toLowerCase().includes('estruc')).length;
 
-  // 🎯 Click sobre las tarjetas superiores
   document.getElementById('execution-count').parentElement.onclick = () => showProjectsByStage('Ejecución');
   document.getElementById('structuring-count').parentElement.onclick = () => showProjectsByStage('Estructuración');
 
@@ -574,7 +504,6 @@ function renderDashboard() {
   renderChart();
 }
 
-// 🟦 Mostrar proyectos según etapa (sin detalle)
 function showProjectsByStage(stageName) {
   const filtered = projectData.filter(p => p.etapa.toLowerCase().includes(stageName.toLowerCase()));
   const list = filtered.map(p => `<li>${p.nombre}</li>`).join("");
