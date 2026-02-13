@@ -126,6 +126,11 @@
       <h3 class="text-xs sm:text-sm text-gray-500 font-semibold uppercase text-center leading-tight break-words">Estructuración</h3>
       <p id="structuring-count" class="text-4xl font-bold text-herm-dark-blue">0</p>
     </div>
+
+    <div class="flex flex-col items-center justify-center bg-white p-5 min-w-[130px] w-[160px] rounded-xl shadow hover:scale-105 transition-transform cursor-pointer">
+      <h3 class="text-xs sm:text-sm text-gray-500 font-semibold uppercase text-center leading-tight">Cierre</h3>
+      <p id="closure-count" class="text-4xl font-bold text-herm-dark-blue">0</p>
+    </div>
   </div>
 </div>
 
@@ -304,6 +309,7 @@ function renderEmptyState() {
     document.getElementById('total-count').textContent = '0';
     document.getElementById('execution-count').textContent = '0';
     document.getElementById('structuring-count').textContent = '0';
+    document.getElementById('closure-count').textContent = '0';
     if(window.donutChart) window.donutChart.destroy();
 }
 
@@ -496,9 +502,11 @@ function renderDashboard() {
   document.getElementById('total-count').textContent = projectData.length;
   document.getElementById('execution-count').textContent = projectData.filter(p => p.etapa.toLowerCase().includes('ejec')).length;
   document.getElementById('structuring-count').textContent = projectData.filter(p => p.etapa.toLowerCase().includes('estruc')).length;
+  document.getElementById('closure-count').textContent = projectData.filter(p => p.etapa.toLowerCase().includes('cierre')).length;
 
   document.getElementById('execution-count').parentElement.onclick = () => showProjectsByStage('Ejecución');
   document.getElementById('structuring-count').parentElement.onclick = () => showProjectsByStage('Estructuración');
+  document.getElementById('closure-count').parentElement.onclick = () => showProjectsByStage('Cierre');
 
   renderProjects();
   renderChart();
